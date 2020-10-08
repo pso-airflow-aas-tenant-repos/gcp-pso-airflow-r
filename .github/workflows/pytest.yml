@@ -1,0 +1,42 @@
+name: Python tests
+on:
+  push:
+    branches: ['develop']
+  pull_request:
+    branches: ['develop']
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          path: main
+      - uses: actions/checkout@v2
+        with:
+          repository: PolideaInternal/pso-google-sfdc-airflow-aas
+          token: ${{ secrets.WORKFLOW_JAKETF_PAT }}
+          path: pso-google-sfdc-airflow-aas
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7
+      - name: Cache pip
+        uses: actions/cache@v2
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            ${{ runner.os }}-
+      - name: Install SFDC Airflow as a Service Python dependencies
+        run: |
+          python -m pip install -e pso-google-sfdc-airflow-aas/sfdc-airflow-aas
+      - name: Install Additional Python dependencies
+        run: |
+          python -m pip install -r main/requirements.txt
+      - name: Run pytest
+        run: |
+          pytest main/tests/ -vvv --color=yes

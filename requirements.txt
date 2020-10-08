@@ -1,0 +1,2 @@
+#TODO sfdc-airflow-aas==0.0.1
+git+https://github.com/PolideaInternal/pso-google-sfdc-airflow-aas.git#egg=sfdc-airflow-aas[dev]&subdirectory=sfdc-airflow-aas
