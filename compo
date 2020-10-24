@@ -1,0 +1,118 @@
+version: '3.7'
+services:
+    redis:
+        image: dva-registry.internal.salesforce.com/dva/deepsea-sfdc-airflow-redis:latest
+        # command: redis-server --requirepass redispass
+        networks:
+            - airflow_net_org
+    postgres:
+        image: dva-registry.internal.salesforce.com/dva/dva-postgres:latest
+        environment:
+            - POSTGRES_USER=airflow
+            - POSTGRES_PASSWORD=airflow
+            - POSTGRES_DB=airflow
+        # Uncomment these lines to persist data on the local filesystem.
+            - PGDATA=/var/lib/postgresql/data/pgdata
+        volumes:
+            - airflow-data-vol-3:/var/lib/postgresql/data/pgdata
+        networks:
+            - airflow_net_org
+
+    webserver:
+        image: local-sfdc-airflow-webserver:latest
+        restart: always
+        depends_on:
+            - postgres
+            - redis
+        environment:
+            - LOAD_EX=n
+            - FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+            - EXECUTOR=Celery
+            # - POSTGRES_USER=airflow
+            # - POSTGRES_PASSWORD=airflow
+            # - POSTGRES_DB=airflow
+            # - REDIS_PASSWORD=redispass
+        volumes:
+            - airflow-vol-3:/home/airflow
+            #- ./dags:/home/airflow/dags
+            # Uncomment to include custom plugins
+            # - ./plugins:/home/airflow/plugins
+        networks:
+            - airflow_net_org
+        ports:
+            - "8080:8080"
+        command: webserver
+        healthcheck:
+            test: ["CMD-SHELL", "[ -f /home/airflow/airflow-webserver.pid ]"]
+            interval: 30s
+            timeout: 30s
+            retries: 3
+
+    flower:
+        image: local-sfdc-airflow-flower:latest
+        restart: always
+        depends_on:
+            - redis
+        environment:
+            - EXECUTOR=Celery
+            # - REDIS_PASSWORD=redispass
+        ports:
+            - "5555:5555"
+        command: flower
+        networks:
+            - airflow_net_org
+
+    scheduler:
+        image: local-sfdc-airflow-scheduler:latest
+        restart: always
+        depends_on:
+            - webserver
+        volumes:
+            #- ./dags:/home/airflow/dags
+            - airflow-vol-3:/home/airflow
+            # Uncomment to include custom plugins
+            # - ./plugins:/home/airflow/plugins
+        environment:
+            - LOAD_EX=n
+            - FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+            - EXECUTOR=Celery
+            # - POSTGRES_USER=airflow
+            # - POSTGRES_PASSWORD=airflow
+            # - POSTGRES_DB=airflow
+            # - REDIS_PASSWORD=redispass
+        command: scheduler
+        networks:
+            - airflow_net_org
+
+    worker:
+        image: local-sfdc-airflow-worker:latest
+        restart: always
+        depends_on:
+            - scheduler
+            - postgres
+            - redis
+        volumes:
+            - airflow-vol-3:/home/airflow
+        # volumes:
+        #     - ./dags:/home/airflow/dags
+            # Uncomment to include custom plugins
+            # - ./plugins:/home/airflow/plugins
+        environment:
+            - FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+            - EXECUTOR=Celery
+            # - POSTGRES_USER=airflow
+            # - POSTGRES_PASSWORD=airflow
+            # - POSTGRES_DB=airflow
+            # - REDIS_PASSWORD=redispass
+        command: worker
+        networks:
+            - airflow_net_org
+
+volumes:
+    airflow-vol-3:
+        name: airflow-vol-3
+    airflow-data-vol-3:
+        name: airflow-data-vol-3
+
+networks:
+    airflow_net_org:
