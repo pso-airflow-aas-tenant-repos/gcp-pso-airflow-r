@@ -1,118 +1,113 @@
-version: '3.7'
-services:
-    redis:
-        image: dva-registry.internal.salesforce.com/dva/deepsea-sfdc-airflow-redis:latest
-        # command: redis-server --requirepass redispass
-        networks:
-            - airflow_net_org
-    postgres:
-        image: dva-registry.internal.salesforce.com/dva/dva-postgres:latest
-        environment:
-            - POSTGRES_USER=airflow
-            - POSTGRES_PASSWORD=airflow
-            - POSTGRES_DB=airflow
-        # Uncomment these lines to persist data on the local filesystem.
-            - PGDATA=/var/lib/postgresql/data/pgdata
-        volumes:
-            - airflow-data-vol-3:/var/lib/postgresql/data/pgdata
-        networks:
-            - airflow_net_org
+from airflow import DAG
+from airflow.sensors.http_sensor import HttpSensor
+from airflow.contrib.sensors.file_sensor import FileSensor
+from airflow.operators.python_operator import PythonOperator
+from airflow.operators.bash_operator import BashOperator
+from airflow.operators.hive_operator import HiveOperator
+from airflow.contrib.operators.spark_submit_operator import SparkSubmitOperator
+from airflow.contrib.operators.spark_submit_operator import SparkSubmitOperator
+from datetime import datetime, timedelta
 
-    webserver:
-        image: local-sfdc-airflow-webserver:latest
-        restart: always
-        depends_on:
-            - postgres
-            - redis
-        environment:
-            - LOAD_EX=n
-            - FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
-            - EXECUTOR=Celery
-            # - POSTGRES_USER=airflow
-            # - POSTGRES_PASSWORD=airflow
-            # - POSTGRES_DB=airflow
-            # - REDIS_PASSWORD=redispass
-        volumes:
-            - airflow-vol-3:/home/airflow
-            #- ./dags:/home/airflow/dags
-            # Uncomment to include custom plugins
-            # - ./plugins:/home/airflow/plugins
-        networks:
-            - airflow_net_org
-        ports:
-            - "8080:8080"
-        command: webserver
-        healthcheck:
-            test: ["CMD-SHELL", "[ -f /home/airflow/airflow-webserver.pid ]"]
-            interval: 30s
-            timeout: 30s
-            retries: 3
 
-    flower:
-        image: local-sfdc-airflow-flower:latest
-        restart: always
-        depends_on:
-            - redis
-        environment:
-            - EXECUTOR=Celery
-            # - REDIS_PASSWORD=redispass
-        ports:
-            - "5555:5555"
-        command: flower
-        networks:
-            - airflow_net_org
+import csv
+import requests
+import json
 
-    scheduler:
-        image: local-sfdc-airflow-scheduler:latest
-        restart: always
-        depends_on:
-            - webserver
-        volumes:
-            #- ./dags:/home/airflow/dags
-            - airflow-vol-3:/home/airflow
-            # Uncomment to include custom plugins
-            # - ./plugins:/home/airflow/plugins
-        environment:
-            - LOAD_EX=n
-            - FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
-            - EXECUTOR=Celery
-            # - POSTGRES_USER=airflow
-            # - POSTGRES_PASSWORD=airflow
-            # - POSTGRES_DB=airflow
-            # - REDIS_PASSWORD=redispass
-        command: scheduler
-        networks:
-            - airflow_net_org
+default_args = {
+            "owner": "airflow",
+            "start_date": datetime(2019, 12, 4),
+            "depends_on_past": False,
+            "email_on_failure": False,
+            "email_on_retry": False,
+            "email": "youremail@host.com",
+            "retries": 1,
+            "retry_delay": timedelta(minutes=5)
+        }
 
-    worker:
-        image: local-sfdc-airflow-worker:latest
-        restart: always
-        depends_on:
-            - scheduler
-            - postgres
-            - redis
-        volumes:
-            - airflow-vol-3:/home/airflow
-        # volumes:
-        #     - ./dags:/home/airflow/dags
-            # Uncomment to include custom plugins
-            # - ./plugins:/home/airflow/plugins
-        environment:
-            - FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
-            - EXECUTOR=Celery
-            # - POSTGRES_USER=airflow
-            # - POSTGRES_PASSWORD=airflow
-            # - POSTGRES_DB=airflow
-            # - REDIS_PASSWORD=redispass
-        command: worker
-        networks:
-            - airflow_net_org
+# described in the file forex_currencies.csv
+def download_rates():
+    with open('/usr/local/airflow/dags/files/forex_currencies.csv') as forex_currencies:
+        reader = csv.DictReader(forex_currencies, delimiter=';')
+        for row in reader:
+            base = row['base']
+            with_pairs = row['with_pairs'].split(' ')
+            indata = requests.get('https://api.exchangeratesapi.io/latest?base=' + base).json()
+            outdata = {'base': base, 'rates': {}, 'last_update': indata['date']}
+            for pair in with_pairs:
+                outdata['rates'][pair] = indata['rates'][pair]
+            with open('/usr/local/airflow/dags/files/forex_rates.json', 'a') as outfile:
+                json.dump(outdata, outfile)
+                outfile.write('\n')
 
-volumes:
-    airflow-vol-3:
-        name: airflow-vol-3
-    airflow-data-vol-3:
-        name: airflow-data-vol-3
+with DAG(dag_id="forex_data_pipeline", 
+    schedule_interval="@daily", 
+    default_args=default_args, 
+    catchup=False) as dag:
+    
+    is_forex_rates_available = HttpSensor(
+        task_id="is_forex_rates_available",
+        method="GET",
+        http_conn_id="forex_api",
+        endpoint="latest",
+        response_check=lambda response: "rates" in response.text,
+        poke_interval=5,
+        timeout=20
+    )
 
-networks:
-    airflow_net_org:
+    is_forex_currencies_file_available = FileSensor(
+        task_id="is_forex_currencies_file_available",
+        fs_conn_id="forex_path",
+        filepath="forex_currencies.csv",
+        poke_interval=5,
+        timeout=20
+    )
+
+    downloading_rates = PythonOperator(
+            task_id="downloading_rates",
+            python_callable=download_rates
+    )    
+
+    saving_rates = BashOperator(
+        task_id="saving_rates",
+        bash_command="""
+            hdfs dfs -mkdir -p /forex && \
+            hdfs dfs -put -f $AIRFLOW_HOME/dags/files/forex_rates.json /forex
+            """
+    )
+
+    creating_forex_rates_table = HiveOperator(
+        task_id="creating_forex_rates_table",
+        hive_cli_conn_id="hive_conn",
+        hql="""
+            CREATE EXTERNAL TABLE IF NOT EXISTS forex_rates(
+                base STRING,
+                last_update DATE,
+                eur DOUBLE,
+                usd DOUBLE,
+                nzd DOUBLE,
+                gbp DOUBLE,
+                jpy DOUBLE,
+                cad DOUBLE
+                )
+            ROW FORMAT DELIMITED
+            FIELDS TERMINATED BY ','
+            STORED AS TEXTFILE
+        """
+    )
+
+ 
+    forex_processing = SparkSubmitOperator(
+        task_id="forex_processing",
+        conn_id="spark_conn",
+        application="/usr/local/airflow/dags/scripts/forex_processing.py",
+        verbose=False
+    )   
+
+    # is_forex_rates_available >> 
+    #     is_forex_currencies_file_available >> 
+    #     download_rates >> 
+    #     saving_rates >> 
+    #     creating_forex_rates_table >> forex_processing
+
+    is_forex_rates_available >> is_forex_currencies_file_available >> downloading_rates >> saving_rates >> creating_forex_rates_table >> forex_processing 
+    
